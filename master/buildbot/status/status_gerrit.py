@@ -24,6 +24,7 @@ from buildbot.status.builder import Results
 from buildbot.status.builder import SUCCESS
 from twisted.internet import reactor
 from twisted.internet.protocol import ProcessProtocol
+from twisted.python import log
 
 
 def defaultReviewCB(builderName, build, result, status, arg):
@@ -44,7 +45,7 @@ class GerritStatusPush(StatusReceiverMultiService):
 
     def __init__(self, server, username, reviewCB=defaultReviewCB,
                  startCB=None, port=29418, reviewArg=None,
-                 startArg=None, **kwargs):
+                 startArg=None, identity_file=None, **kwargs):
         """
         @param server:    Gerrit SSH server's address to use for push event notifications.
         @param username:  Gerrit SSH server's username.
@@ -55,12 +56,16 @@ class GerritStatusPush(StatusReceiverMultiService):
         @param port:      Gerrit SSH server's port.
         @param reviewArg: Optional argument passed to the review callback.
         @param startArg:  Optional argument passed to the start callback.
+
+        @type  identity_file: string
+        @param identity_file: identity file to for authentication (optional).
         """
         StatusReceiverMultiService.__init__(self)
         # Parameters.
         self.gerrit_server = server
         self.gerrit_username = username
         self.gerrit_port = port
+        self.identity_file = identity_file
         self.reviewCB = reviewCB
         self.reviewArg = reviewArg
         self.startCB = startCB
@@ -72,19 +77,18 @@ class GerritStatusPush(StatusReceiverMultiService):
             self.status = status
 
         def outReceived(self, data):
-            print "gerritout:", data
+            log.msg("gerritout: %r" % (data, ))
 
         def errReceived(self, data):
-            print "gerriterr:", data
+            log.msg("gerriterr: %r" % (data, ))
 
         def processEnded(self, status_object):
             if status_object.value.exitCode:
-                print "gerrit status: ERROR:", status_object
+                log.msg("gerrit status: ERROR: %r" % (status_object, ))
             else:
-                print "gerrit status: OK"
+                log.msg("gerrit status: OK")
 
     def startService(self):
-        print """Starting up."""
         StatusReceiverMultiService.startService(self)
         self.status = self.parent.getStatus()
         self.status.subscribe(self)
@@ -140,16 +144,18 @@ class GerritStatusPush(StatusReceiverMultiService):
                 return
 
     def sendCodeReview(self, project, revision, message=None, verified=0, reviewed=0):
-        command = ["ssh", self.gerrit_username + "@" + self.gerrit_server, "-p %d" % self.gerrit_port,
-                   "gerrit", "review", "--project %s" % str(project)]
+        args = [self.gerrit_username + "@" + self.gerrit_server, "-p", str(self.gerrit_port)]
+        if self.identity_file is not None:
+            args = args + ['-i', self.identity_file]
+        command = ["ssh"] + args + ["gerrit", "review", "--project", str(project)]
         if message:
-            command.append("--message '%s'" % message.replace("'", "\""))
+            command.extend(["--message",  "'%s'" % message.replace("'", "\"")])
         if verified:
-            command.extend(["--verified %d" % int(verified)])
+            command.extend(["--verified", "%d" % int(verified)])
         if reviewed:
-            command.extend(["--code-review %d" % int(reviewed)])
+            command.extend(["--code-review" "%d" % int(reviewed)])
         command.append(str(revision))
-        print command
+        log.msg('running "%s"' % ' '.join(command))
         reactor.spawnProcess(self.LocalPP(self), "ssh", command)
 
 # vim: set ts=4 sts=4 sw=4 et:
